@@ -1,11 +1,12 @@
+// hardhat.config.js
+
 require('dotenv').config();
-
 require("@nomiclabs/hardhat-ethers");
-const { API_URL, PRIVATE_KEY } = process.env;
+require("@nomiclabs/hardhat-etherscan");
 
-/**
- * @type import('hardhat/config').HardhatUserConfig
- */
+const { API_URL, PRIVATE_KEY } = process.env;
+const ETHERSCAN_API_KEY = process.env.ETHERSCAN_API_KEY;
+
 module.exports = {
   solidity: "0.7.3",
   defaultNetwork: "goerli",
@@ -16,4 +17,9 @@ module.exports = {
       accounts: [`0x${PRIVATE_KEY}`]
     }
   },
-}
+  etherscan: {
+    // Your API key for Etherscan
+    // Obtain one at https://etherscan.io/
+    apiKey: ETHERSCAN_API_KEY
+  }
+};

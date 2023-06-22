@@ -11,6 +11,25 @@
     "type": "constructor"
   },
   {
+    "anonymous": false,
+    "inputs": [
+      {
+        "indexed": false,
+        "internalType": "string",
+        "name": "message",
+        "type": "string"
+      },
+      {
+        "indexed": true,
+        "internalType": "uint256",
+        "name": "indexId",
+        "type": "uint256"
+      }
+    ],
+    "name": "MessageUpdated",
+    "type": "event"
+  },
+  {
     "inputs": [],
     "name": "message",
     "outputs": [

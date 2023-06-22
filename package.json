@@ -1,7 +1,6 @@
 {
   "name": "evm",
   "version": "1.0.0",
-  "type": "module",
   "description": "",
   "main": "index.js",
   "scripts": {
@@ -11,16 +10,19 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/node": "^20.3.1",
     "alchemy-sdk": "^2.9.0",
     "axios": "^1.4.0",
-    "dotenv": "^16.1.4",
+    "dotenv": "^16.3.1",
     "ethereumjs-tx": "^2.1.2",
     "fast-json-stringify": "^5.7.0",
     "keccak": "^3.0.3"
   },
   "devDependencies": {
     "@nomiclabs/hardhat-ethers": "^2.2.3",
+    "@nomiclabs/hardhat-etherscan": "^3.1.7",
     "ethers": "^5.7.2",
-    "hardhat": "^2.14.1"
+    "hardhat": "^2.16.0",
+    "ts-node": "^10.9.1"
   }
 }

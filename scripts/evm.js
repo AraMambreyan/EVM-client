@@ -10,19 +10,19 @@ For production:
 */
 
 const ethers = require('ethers');
-require('dotenv').config();
+require('dotenv').config({ path: '../.env' });
 const fs = require('fs');
 const axios = require('axios');
-keccak = require('keccak');
+const keccak = require('keccak');
+const path = require('path');
 
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_KEY;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS;
 const ACCOUNT_ADDRESS = process.env.ACCOUNT_ADDRESS;
-const ACCOUNT_2_ADDRESS = '0x3404EDBB079CB3b8525876299D51f540B569FAe3'
-const HELLO_WORLD_ABI = fs.readFileSync('scripts/HelloWorld_abi.json', 'utf8');
-
+const ACCOUNT_2_ADDRESS = process.env.ACCOUNT_ADDRESS_2;
+const HELLO_WORLD_ABI = fs.readFileSync(path.join(__dirname, '../HelloWorld_abi.json'), 'utf8');
 
 class EvmHttpClient {
     static async create(account_address, private_key, client_url) {

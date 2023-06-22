@@ -1,0 +1,8 @@
+node_modules/
+.env
+.idea/
+cache/
+artifacts/
+ts-scripts/**/*.js
+ts-scripts/**/*.js.map
+
