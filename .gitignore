@@ -5,4 +5,6 @@ cache/
 artifacts/
 ts-scripts/**/*.js
 ts-scripts/**/*.js.map
+websocket/**/*.js
+websocket/**/*.js.map
 
