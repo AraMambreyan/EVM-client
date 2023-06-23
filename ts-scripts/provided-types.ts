@@ -27,9 +27,9 @@ type UnsignedTransaction = ContractCall & TransactionParameters & {
 
 interface IContract {
     getAddress(): string  // Contract address
-    call(func: string, ...args: any[]): Promise<any>   // Query view function
-    send(func: string, ...args: any[]): Promise<any>  // Create ContractCall for transaction
     getEventTopic(eventName: string): string | null  // Keccak hash of event name
+    query(func: string, ...args: any[]) : Promise<any>   // Query view function
+    createContractCall(method: string, ...args: any[]) : ContractCall  // Create ContractCall for transaction
 }
 
 
@@ -166,6 +166,11 @@ enum ClientType {
     WebSocket
 }
 
+interface IAccountLoader {
+    loadAccountAddress(): string;
+
+    loadPrivateKey(): string;
+}
 
 interface IEvmClient {
     type(): ClientType
@@ -178,9 +183,9 @@ interface IEvmClient {
 
     updateNonce()
 
-    loadAccount(envFile: string | null)
+    loadAccount(IAccountLoader): void
 
-    getNonce(): Promise<number>
+    getNonce(): Promise<number | undefined>
 
     incrementNonce()
 
@@ -298,5 +303,6 @@ export {
     TransactionInfo,
     ContractCall,
     ClientType,
-    IContract
+    IContract,
+    IAccountLoader
 }

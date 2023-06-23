@@ -40,9 +40,9 @@ async function test() {
     const CONTRACT_ADDRESS = process.env.HELLO_WORLD_CONTRACT_ADDRESS;
     const ACCOUNT_2_ADDRESS = process.env.ACCOUNT_ADDRESS_2;
     const HELLO_WORLD_ABI = fs.readFileSync(path.join(__dirname, '../HelloWorld_abi.json'), 'utf8');
-    let client = new EvmHttpClient(API_URL, new EnvAccountLoader());
+    let client = new EvmHttpClient(API_URL);
 
-    await client.loadAccount();
+    await client.loadAccount(new EnvAccountLoader());
     //
     // // test sending to EOA with standard broadcast
     // let signedTx = await client.signTx({
@@ -112,11 +112,6 @@ async function test() {
     await client.onLogs(CONTRACT_ADDRESS, filterTopics, (log) => {
         console.log(log);
     }, 23*1000);
-    await contract.send('update', '7777777');
-    await contract.send('update', '999999999');
-    await contract.send('update', '7777777');
-    await contract.send('update', '999999999');
-    await contract.send('update', '7777777');
 }
 
 test();

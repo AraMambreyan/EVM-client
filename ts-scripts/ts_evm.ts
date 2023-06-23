@@ -19,7 +19,8 @@ import {
     TransactionInfo,
     ContractCall,
     IContract,
-    ClientType
+    ClientType,
+    IAccountLoader,
 } from './provided-types'
 
 
@@ -31,12 +32,6 @@ require('dotenv').config({path: path.resolve(__dirname, '../.env')});
 const ethers = require('ethers');
 const keccak = require('keccak');
 
-
-interface IAccountLoader {
-    loadAccountAddress(): string;
-
-    loadPrivateKey(): string;
-}
 
 class EnvAccountLoader {
     loadAccountAddress(): string {
@@ -53,7 +48,6 @@ class EvmHttpClient implements IEvmClient {
     clientUrlDns: string;
     clientUrlPath: string;
     httpClient: Client;
-    accountLoader: IAccountLoader;
     accountAddress?: string
     privateKey?: string;
     nonce?: number;
@@ -61,13 +55,12 @@ class EvmHttpClient implements IEvmClient {
     keccakUtil = keccak('keccak256');
     defaultIntervalMs = 30000;
 
-    constructor(clientUrl: string, accountLoader: IAccountLoader) {
+    constructor(clientUrl: string) {
         let url = new URL(clientUrl);
         this.clientUrlDns = url.origin;
         this.clientUrlPath = url.pathname;
 
         this.httpClient = new Client(this.clientUrlDns);
-        this.accountLoader = accountLoader;
     }
 
     async query(method: RpcMethod, params: any[] = []): Promise<RpcMessage<any>> {
@@ -103,12 +96,14 @@ class EvmHttpClient implements IEvmClient {
     }
 
     async broadcastTx(signedTx: string): Promise<RpcMessage<string>> {
+        this.checkAccountLoaded();
         let result = await this.query(RpcMethod.SendRawTransaction, [signedTx]);
-        await this.incrementNonce();
+        this.incrementNonce();
         return result as RpcMessage<string>;
     }
 
     async broadcastTxSync(signedTx: string, timeout: number | null): Promise<TransactionReceipt | null> {
+        this.checkAccountLoaded();
         let transactionHash = (await this.broadcastTx(signedTx))['result'];
         console.log(transactionHash);
 
@@ -200,8 +195,7 @@ class EvmHttpClient implements IEvmClient {
         return jsonResult['result'];
     }
 
-    async getNonce(): Promise<number> {
-        await this.setNonceIfUndefined();
+    async getNonce(): Promise<number | undefined> {
         return this.nonce;
     }
 
@@ -209,14 +203,10 @@ class EvmHttpClient implements IEvmClient {
         return (await this.query(RpcMethod.GetTransactionReceipt, [hash]))['result'];
     }
 
-    private async setNonceIfUndefined() {
+    incrementNonce() {
         if (this.nonce === undefined) {
-            await this.updateNonce();
+            throw new Error('Nonce not initialized');
         }
-    }
-
-    async incrementNonce() {
-        await this.setNonceIfUndefined();
         this.nonce++;
     }
 
@@ -227,16 +217,12 @@ class EvmHttpClient implements IEvmClient {
         return result;
     }
 
-    async loadAccount() {
+    async loadAccount(accountLoader: IAccountLoader) {
         if (this.accountAddress === undefined) {
-            this.accountAddress = this.accountLoader.loadAccountAddress();
+            this.accountAddress = accountLoader.loadAccountAddress();
         }
         if (this.privateKey === undefined) {
-            this.privateKey = this.accountLoader.loadPrivateKey();
-        }
-        if (this.nonce === undefined) {
-            let json = await this.query(RpcMethod.GetTransactionCount, [this.accountAddress, 'latest']);
-            this.nonce = parseInt(json['result'], 16);
+            this.privateKey = accountLoader.loadPrivateKey();
         }
         if (this.wallet === undefined) {
             this.wallet = new ethers.Wallet(this.privateKey);
@@ -272,7 +258,7 @@ class EvmHttpClient implements IEvmClient {
     }
 
     private checkAccountLoaded(): void {
-        if (this.accountAddress === undefined || this.nonce === undefined || this.privateKey === undefined || this.wallet === undefined) {
+        if (this.accountAddress === undefined || this.privateKey === undefined || this.wallet === undefined) {
             throw new Error('Account not loaded');
         }
     }
@@ -296,7 +282,9 @@ class EvmHttpClient implements IEvmClient {
     }
 
     async updateNonce(): Promise<void> {
-        await this.loadAccount();
+        this.checkAccountLoaded();
+        let json = await this.query(RpcMethod.GetTransactionCount, [this.accountAddress, 'latest']);
+        this.nonce = parseInt(json['result'], 16);
     }
 
     url(): string {
@@ -318,38 +306,38 @@ class Contract implements IContract {
         this.populateEventAbi(abi);
     }
 
+    async query(func: string, ...args: any[]): Promise<TransactionReceipt> {
+        let data = this.constructData(func, ...args);
+        let jsonResult = await this.client.query(RpcMethod.Call, [{
+            to: this.address,
+            data: data,
+        }, 'latest']);
+        let encodedResult = jsonResult['result'];
+        let types = this.getOutputTypes(func);
+        return ethers.utils.defaultAbiCoder.decode(types, encodedResult);
+    }
+    createContractCall(method: string, ...args: any[]): ContractCall {
+        return {
+            to: this.address,
+            data: this.constructData(method, ...args)
+        }
+    }
+
     private populateMethodAbi(abi: object[]) {
         this.methodAbi = new Map<string, object>();
-        for (let i = 0; i < abi.length; i++) {
-            let object = abi[i];
-            if (object['type'] === 'function') {
-                this.methodAbi.set(object['name'], object);
-            }
-        }
+        let functions = abi.filter((object) => object['type'] === 'function');
+        functions.forEach((object) => {
+            this.methodAbi.set(object['name'], object);
+        });
     }
 
     private populateEventAbi(abi: object[]) {
         this.eventAbi = new Map<string, string>();
-        for (let i = 0; i < abi.length; i++) {
-            let object = abi[i];
-            if (object['type'] === 'event') {
-                let signature = this.getObjectSignature(object);
-                this.eventAbi.set(object['name'], '0x' + this.client.keccak(signature));
-            }
-        }
-    }
-
-    async send(func: string, ...args: any[]): Promise<any> {
-        let data = this.constructData(func, ...args);
-        let signedTx = await this.client.signTx({
-            to: this.address,
-            data: data,
-        }, null, {
-            gasLimit: 2e6,
-            gasPrice: 5e10,
-            value: 0,
+        let events = abi.filter((object) => object['type'] === 'event');
+        events.forEach((object) => {
+            let signature = this.getObjectSignature(object);
+            this.eventAbi.set(object['name'], '0x' + this.client.keccak(signature));
         });
-        return await this.client.broadcastTxSync(signedTx, null);
     }
 
     getAddress(): string {
@@ -357,10 +345,8 @@ class Contract implements IContract {
     }
 
     getEventTopic(eventName: string): string | null {
-        if (!this.eventAbi.has(eventName)) {
-            return null;
-        }
-        return this.eventAbi.get(eventName);
+        let event = this.eventAbi.get(eventName);
+        return (event === undefined) ? null : event;
     }
 
     private getObjectSignature(abiObject: object): string {
@@ -382,43 +368,21 @@ class Contract implements IContract {
         return hash.slice(0, 8);
     }
 
-    private getParameterTypes(inputs) {
-        let types = [];
-        for (let i = 0; i < inputs.length; i++) {
-            types.push(inputs[i]['internalType']);
-        }
-        return types;
-    }
-
     private constructData(method, ...args: any[]): string {
-        if (!this.methodAbi.has(method)) {
+        let methodObject = this.methodAbi.get(method);
+        if (methodObject === undefined) {
             throw new Error(`Method ${method} does not exist in the ABI`);
         }
-        let methodObject = this.methodAbi.get(method);
-        let functionSelector = this.getFunctionSelector(methodObject);
 
-        let encodedInputs = ethers.utils.defaultAbiCoder.encode(this.getParameterTypes(methodObject['inputs']), args).slice(2);
+        let functionSelector = this.getFunctionSelector(methodObject);
+        let params = methodObject['inputs'].map(object => object['internalType']);
+        let encodedInputs = ethers.utils.defaultAbiCoder.encode(params, args).slice(2);
         return '0x' + functionSelector + encodedInputs;
     }
 
     private getOutputTypes(func: string) {
         let outputs = this.methodAbi.get(func)['outputs'];
-        let types = [];
-        for (let i = 0; i < outputs.length; i++) {
-            types.push(outputs[i]['internalType']);
-        }
-        return types;
-    }
-
-    async call(func: string, ...args: any[]): Promise<TransactionReceipt> {
-        let data = this.constructData(func, ...args);
-        let jsonResult = await this.client.query(RpcMethod.Call, [{
-            to: this.address,
-            data: data,
-        }, 'latest']);
-        let encodedResult = jsonResult['result'];
-        let types = this.getOutputTypes(func);
-        return ethers.utils.defaultAbiCoder.decode(types, encodedResult);
+        return outputs.map(object => object['internalType']);
     }
 }
 
@@ -429,4 +393,5 @@ export {
     EnvAccountLoader,
     EvmHttpClient
 }
+
 
