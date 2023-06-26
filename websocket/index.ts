@@ -40,7 +40,7 @@ class WebSocket implements IWebSocket {
         }
     }
 
-    private async sleep(ms: number): Promise<void> {
+    async sleep(ms: number): Promise<void> {
         return await new Promise(resolve => setTimeout(resolve, ms));
     }
 
@@ -147,11 +147,6 @@ class RpcWebSocket extends WebSocket implements IRpcWebSocket {
             else {
                 this.socket.emit(id, data);
             }
-        });
-
-        this.onNullIdMessage((msg) => {
-            console.log('null id message received');
-            console.log(msg);
         });
     }
     onNullIdMessage(callback: (msg: any) => void): void {

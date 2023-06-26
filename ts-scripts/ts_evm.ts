@@ -22,6 +22,10 @@ import {
     ClientType,
     IAccountLoader,
 } from './provided-types'
+import {
+    RpcWebSocket,
+    IRpcWebSocket
+} from "../websocket";
 
 
 import {Client} from 'undici';
@@ -44,52 +48,66 @@ class EnvAccountLoader {
 }
 
 
-class EvmHttpClient implements IEvmClient {
-    clientUrlDns: string;
-    clientUrlPath: string;
-    httpClient: Client;
-    accountAddress?: string
+abstract class AbstractEvmClient implements IEvmClient {
+    accountAddress?: string;
     privateKey?: string;
     nonce?: number;
     wallet?: typeof ethers.Wallet;
     keccakUtil = keccak('keccak256');
-    defaultIntervalMs = 30000;
+    defaultInterval = 30*1000;
+    defaultTimeout = 45*1000;
 
-    constructor(clientUrl: string) {
-        let url = new URL(clientUrl);
-        this.clientUrlDns = url.origin;
-        this.clientUrlPath = url.pathname;
+    async signTx(contractCall: ContractCall, nonceOverride: number | null, txParams: TransactionParameters): Promise<string> {
+        this.checkAccountLoaded();
+        let unsignedTx: UnsignedTransaction = {
+            ...contractCall,
+            ...txParams,
+            from: this.accountAddress,
+            nonce: (nonceOverride === null) ? this.nonce : nonceOverride,
+            type: (txParams.gasPrice !== null) ? 0 : 2,
+            value: (typeof txParams.value !== 'string') ? this.getHex(txParams.value) : txParams.value,
+        }
 
-        this.httpClient = new Client(this.clientUrlDns);
+        return this.wallet.signTransaction(unsignedTx);
     }
 
-    async query(method: RpcMethod, params: any[] = []): Promise<RpcMessage<any>> {
-        try {
-            let payload = {
-                jsonrpc: '2.0',
-                id: 0, // irrelevant for the http client
-                method: method,
-                params: params
-            };
+    abstract type(): ClientType;
+    abstract url(): string;
+    abstract onBlock(callback: (msg: any) => void, intervalMs?: number, resubscibing?: boolean): Promise<void>;
+    abstract onPendingTx(callback: (msg: any) => void, intervalMs?: number, resubscibing?: boolean): Promise<void>;
+    abstract onLogs(addresses: string | string[], topics: (string | string[])[], callback: (log: Log | Log[]) => void, intervalMs?: number, resubscibing?: boolean): Promise<void>;
+    abstract query(method: RpcMethod, params?: any[]): Promise<RpcMessage<any>>;
 
-            let {body} = await this.httpClient.request({
-                path: this.clientUrlPath,
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify(payload)
-            });
+    getAndIncrementNonce(): number {
+        if (this.nonce === undefined) {
+            throw new Error('Nonce not initialized');
+        }
+        let nonce = this.nonce;
+        this.nonce++;
+        return nonce;
+    }
 
-            return await body.json();
-        } catch (err) {
-            console.log(err);
+    protected checkAccountLoaded(): void {
+        if (this.accountAddress === undefined || this.privateKey === undefined || this.wallet === undefined) {
+            throw new Error('Account not loaded');
         }
     }
 
-    getHex(num: number): string {
-        return `0x${num.toString(16)}`
+    async signAndBroadcastTx(contractCall: ContractCall): Promise<TransactionReceipt | null> {
+        let signedTx = await this.signTx(contractCall, null, {
+            gasLimit: 2e6,
+            gasPrice: 5e10,
+            value: 0,
+        });
+        return this.broadcastTxSync(signedTx, this.defaultTimeout);
     }
+
+    async updateNonce(): Promise<void> {
+        this.checkAccountLoaded();
+        let json = await this.query(RpcMethod.GetTransactionCount, [this.accountAddress, 'latest']);
+        this.nonce = parseInt(json['result'], 16);
+    }
+
 
     abiDecode(data: string, types: string[]): any {
         return ethers.utils.defaultAbiCoder.decode(types, data);
@@ -100,32 +118,6 @@ class EvmHttpClient implements IEvmClient {
         let result = await this.query(RpcMethod.SendRawTransaction, [signedTx]);
         this.incrementNonce();
         return result as RpcMessage<string>;
-    }
-
-    async broadcastTxSync(signedTx: string, timeout: number | null): Promise<TransactionReceipt | null> {
-        this.checkAccountLoaded();
-        let transactionHash = (await this.broadcastTx(signedTx))['result'];
-        console.log(transactionHash);
-
-        // wait for the transaction to be mined
-        let timeoutReached = false;
-        if (timeout !== null) {
-            setTimeout(() => {
-                if (receipt === null) {
-                    console.log('Broadcast Tx sync timeout reached');
-                    timeoutReached = true;
-                }
-            }, timeout);
-        }
-
-        let receipt = null;
-        while (receipt === null && timeoutReached === false) {
-            console.log('Awaiting receipt... of transaction hash: ' + transactionHash);
-            await new Promise(resolve => setTimeout(resolve, 1000));
-            receipt = (await this.query(RpcMethod.GetTransactionReceipt, [transactionHash]))['result'];
-        }
-
-        return receipt;
     }
 
     async checkFilter(filterId: string): Promise<Log[] | null> {
@@ -163,15 +155,6 @@ class EvmHttpClient implements IEvmClient {
         return this.accountAddress;
     }
 
-    getAndIncrementNonce(): number {
-        if (this.nonce === undefined) {
-            throw new Error('Nonce not initialized');
-        }
-        let nonce = this.nonce;
-        this.nonce++;
-        return nonce;
-    }
-
     async getBlockHeight(): Promise<number | null> {
         let json = await this.query(RpcMethod.BlockNumber);
         return parseInt(json['result'], 16);
@@ -203,18 +186,18 @@ class EvmHttpClient implements IEvmClient {
         return (await this.query(RpcMethod.GetTransactionReceipt, [hash]))['result'];
     }
 
-    incrementNonce() {
-        if (this.nonce === undefined) {
-            throw new Error('Nonce not initialized');
-        }
-        this.nonce++;
-    }
-
     keccak(data: string): string {
         let result = this.keccakUtil.update(data).digest('hex');
         this.keccakUtil._resetState();
         this.keccakUtil._finalized = false;
         return result;
+    }
+
+    incrementNonce() {
+        if (this.nonce === undefined) {
+            throw new Error('Nonce not initialized');
+        }
+        this.nonce++;
     }
 
     async loadAccount(accountLoader: IAccountLoader) {
@@ -233,13 +216,173 @@ class EvmHttpClient implements IEvmClient {
         return new Contract(this, abi, address);
     }
 
+    getHex(num: number): string {
+        return `0x${num.toString(16)}`
+    }
+
+    async broadcastTxSync(signedTx: string, timeout: number | null): Promise<TransactionReceipt | null> {
+        this.checkAccountLoaded();
+        let transactionHash = (await this.broadcastTx(signedTx))['result'];
+        console.log(transactionHash);
+
+        // wait for the transaction to be mined
+        let timeoutReached = false;
+        if (timeout !== null) {
+            setTimeout(() => {
+                if (receipt === null) {
+                    console.log('Broadcast Tx sync timeout reached');
+                    timeoutReached = true;
+                }
+            }, timeout);
+        }
+
+        let receipt = null;
+        while (receipt === null && timeoutReached === false) {
+            console.log('Awaiting receipt... of transaction hash: ' + transactionHash);
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            receipt = (await this.query(RpcMethod.GetTransactionReceipt, [transactionHash]))['result'];
+        }
+
+        return receipt;
+    }
+}
+
+
+class EvmWebSocketClient extends AbstractEvmClient {
+    client: RpcWebSocket;
+    subscriptionIdMap = new Map<string, (msg: any) => void>();
+    subscriptionKeyMap = new Map<string, string>();
+
+
+    private
+    constructor(url: string) {
+        super();
+        this.client = new RpcWebSocket(url);
+        this.client.onNullIdMessage((message) => {
+            let subscriptionId = message['params']['subscription'];
+            let result = message['params']['result'];
+            let subscriptionCallback = this.subscriptionIdMap.get(subscriptionId);
+            if (subscriptionCallback !== undefined) {
+                subscriptionCallback(result);
+            }
+            else {
+                console.log('Subscription callback not found for id: ' + subscriptionId);
+            }
+        });
+    }
+    async query(method: RpcMethod, params: any[] = []): Promise<RpcMessage<any>> {
+        try {
+            let timeoutReached = false;
+            let result: RpcMessage<any>;
+            await this.client.sendWithCallback(method, (message) => {
+                result = message;
+            }, params);
+
+            setTimeout(() => {
+                if (result === undefined) {
+                    console.log('Query timeout reached');
+                    timeoutReached = true;
+                }
+            }, this.defaultTimeout);
+
+            while (result === undefined && timeoutReached === false) {
+                await this.client.sleep(1);
+            }
+
+            return result as RpcMessage<any>;
+        }
+        catch (e) {
+            console.log(e);
+        }
+    }
+
+    private async onFilter(callback: (msg: any) => void, subscription: Subscription, params: any[], resubscibing?: boolean) {
+        if (resubscibing) {
+            let previousSubscriptionId = this.subscriptionKeyMap.get(subscription);
+            if (previousSubscriptionId !== undefined) {
+                await this.query(RpcMethod.Unsubscribe, [previousSubscriptionId]);
+                this.subscriptionIdMap.delete(previousSubscriptionId);
+                this.subscriptionKeyMap.delete(subscription);
+            }
+        }
+
+        let jsonResult = await this.query(RpcMethod.Subscribe, params);
+        let subscriptionId = jsonResult['result'];
+        this.subscriptionIdMap.set(subscriptionId, callback);
+        this.subscriptionKeyMap.set(subscription, subscriptionId);
+
+    }
+
+    async onBlock(callback: (msg: any) => void, intervalMs?: number | null, resubscibing?: boolean): Promise<void> {
+        await this.onFilter(callback, Subscription.Blocks, [Subscription.Blocks], resubscibing);
+    }
+
+    async onLogs(addresses: string | string[] | null, topics: (string | string[])[], callback: (log: (Log | Log[])) => void, intervalMs?: number | null, resubscibing?: boolean): Promise<void> {
+        await this.onFilter(callback, Subscription.Logs, [Subscription.Logs, {addresses, topics}], resubscibing);
+    }
+
+    async onPendingTx(callback: (msg: any) => void, intervalMs?: number | null, resubscibing?: boolean): Promise<void> {
+        await this.onFilter(callback, Subscription.PendingTransactions, [Subscription.PendingTransactions], resubscibing);
+    }
+
+    type(): ClientType {
+        return ClientType.WebSocket;
+    }
+
+    url(): string {
+        return this.client.url();
+    }
+
+
+}
+
+
+
+class EvmHttpClient extends AbstractEvmClient {
+    clientUrlDns: string;
+    clientUrlPath: string;
+    httpClient: Client;
+
+    constructor(clientUrl: string) {
+        super();
+        let url = new URL(clientUrl);
+        this.clientUrlDns = url.origin;
+        this.clientUrlPath = url.pathname;
+
+        this.httpClient = new Client(this.clientUrlDns);
+    }
+
+    async query(method: RpcMethod, params: any[] = []): Promise<RpcMessage<any>> {
+        try {
+            let payload = {
+                jsonrpc: '2.0',
+                id: 0, // irrelevant for the http client
+                method: method,
+                params: params
+            };
+
+            let {body} = await this.httpClient.request({
+                path: this.clientUrlPath,
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify(payload)
+            });
+
+            return await body.json();
+        } catch (err) {
+            console.log(err);
+        }
+    }
+
     private onFilter(callback: (msg: any) => void, filterId: string, intervalMs: number | null | undefined,): void {
         setInterval(async () => {
             let result = await this.checkFilter(filterId);
             if (result !== null) {
                 callback(result);
             }
-        }, (typeof intervalMs === 'number') ? intervalMs : this.defaultIntervalMs);
+        }, (typeof intervalMs === 'number') ? intervalMs : this.defaultInterval);
     }
 
     async onBlock(callback: (msg: any) => void, intervalMs?: number | null, resubscibing?: boolean): Promise<void> {
@@ -257,34 +400,8 @@ class EvmHttpClient implements IEvmClient {
         this.onFilter(callback, filterId, intervalMs);
     }
 
-    private checkAccountLoaded(): void {
-        if (this.accountAddress === undefined || this.privateKey === undefined || this.wallet === undefined) {
-            throw new Error('Account not loaded');
-        }
-    }
-
-    async signTx(contractCall: ContractCall, nonceOverride: number | null, txParams: TransactionParameters): Promise<string> {
-        this.checkAccountLoaded();
-        let unsignedTx: UnsignedTransaction = {
-            ...contractCall,
-            ...txParams,
-            from: this.accountAddress,
-            nonce: (nonceOverride === null) ? this.nonce : nonceOverride,
-            type: (txParams.gasPrice !== null) ? 0 : 2,
-            value: (typeof txParams.value !== 'string') ? this.getHex(txParams.value) : txParams.value,
-        }
-
-        return this.wallet.signTransaction(unsignedTx);
-    }
-
     type(): ClientType {
         return ClientType.Http;
-    }
-
-    async updateNonce(): Promise<void> {
-        this.checkAccountLoaded();
-        let json = await this.query(RpcMethod.GetTransactionCount, [this.accountAddress, 'latest']);
-        this.nonce = parseInt(json['result'], 16);
     }
 
     url(): string {
@@ -294,12 +411,12 @@ class EvmHttpClient implements IEvmClient {
 
 
 class Contract implements IContract {
-    client: IEvmClient;
+    client: AbstractEvmClient;
     address: string;
     methodAbi: Map<string, object>;
     eventAbi: Map<string, string>;
 
-    constructor(client: IEvmClient, abi: object[], address: string) {
+    constructor(client: AbstractEvmClient, abi: object[], address: string) {
         this.client = client;
         this.address = address;
         this.populateMethodAbi(abi);
@@ -387,11 +504,22 @@ class Contract implements IContract {
 }
 
 
+function getEvmClient(url: string) : IEvmClient {
+    let urlObj = new URL(url);
+    let protocol = urlObj.protocol;
+    if (protocol === 'ws:' || protocol === 'wss:') {
+        return new EvmWebSocketClient(url);
+    } else if (protocol === 'http:' || protocol === 'https:') {
+        return new EvmHttpClient(url);
+    } else {
+        throw new Error(`Unsupported protocol ${protocol}`);
+    }
+}
+
+
 export {
-    Contract,
-    IAccountLoader,
     EnvAccountLoader,
-    EvmHttpClient
+    getEvmClient
 }
 
 

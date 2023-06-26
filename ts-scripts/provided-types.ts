@@ -151,6 +151,7 @@ enum RpcMethod {
     SendRawTransaction = 'eth_sendRawTransaction',
     GetTransactionReceipt = 'eth_getTransactionReceipt',
     Subscribe = 'eth_subscribe',
+    Unsubscribe = 'eth_unsubscribe',
     Call = 'eth_call',
 }
 
@@ -270,10 +271,8 @@ interface IEvmClient {
 
     // Calls broadcastTx() then polls the transaction receipt until it's mined
     broadcastTxSync(signedTx: string, timeout: number | null): Promise<TransactionReceipt | null>
-    query(
-        method: RpcMethod,
-        params: any[]
-    ): Promise<RpcMessage<any>>
+
+    signAndBroadcastTx(contractCall: ContractCall): Promise<TransactionReceipt | null>;
 }
 
 
