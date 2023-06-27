@@ -318,7 +318,7 @@ class EvmWebSocketClient extends AbstractEvmClient {
     }
 
     async onLogs(addresses: string | string[] | null, topics: (string | string[])[], callback: (log: (Log | Log[])) => void, intervalMs?: number | null, resubscibing?: boolean): Promise<void> {
-        await this.onFilter(callback, Subscription.Logs, [Subscription.Logs, {addresses, topics}], resubscibing);
+        await this.onFilter(callback, Subscription.Logs, [Subscription.Logs, {address: addresses, topics}], resubscibing);
     }
 
     async onPendingTx(callback: (msg: any) => void, intervalMs?: number | null, resubscibing?: boolean): Promise<void> {
